@@ -1,5 +1,3 @@
-// File: src/main/java/org/example/ToDoSwing.java
-// Swing To-Do popup app — add / complete / delete with persistence (no external libs)
 package org.example;
 
 import javax.swing.*;
@@ -15,41 +13,43 @@ import java.nio.file.*;
 import java.util.*;
 
 public class ToDoSwing extends JFrame {
-    /* ===== Model ===== */
+    // Simple task data
     static class Task {
-        int id;               // why: stable identity for toggle/delete
-        String title;
-        String description;
-        boolean completed;
+        int id;               // unique id for this task
+        String title;         // short title
+        String description;   // longer note
+        boolean completed;    // done flag
         Task(int id, String title, String description, boolean completed) {
             this.id = id; this.title = title; this.description = description; this.completed = completed;
         }
     }
 
-    /* ===== Persistence (plain text: id \t completed(0/1) \t title \t description) ===== */
+    // Store tasks as tab separated lines in a file
     static class TaskStore {
-        private final Path file;
+        private final Path file;           // file path like ~/.todo_simple/tasks.txt
         TaskStore(Path file) { this.file = file; }
 
+        // Read all tasks from disk
         java.util.List<Task> load() {
             java.util.List<Task> out = new ArrayList<>();
             try {
                 ensureParent();
-                if (!Files.exists(file)) return out;
+                if (!Files.exists(file)) return out;      // first run, no file yet
                 for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
-                    if (line.trim().isEmpty()) continue;
+                    if (line.trim().isEmpty()) continue; // skip blank lines
                     String[] parts = line.split("\t", -1);
-                    if (parts.length < 4) continue; // skip corrupt rows
+                    if (parts.length < 4) continue;      // skip bad lines
                     int id = Integer.parseInt(parts[0]);
                     boolean completed = "1".equals(parts[1]);
                     String title = parts[2];
                     String desc = parts[3];
                     out.add(new Task(id, title, desc, completed));
                 }
-            } catch (Exception ignored) { /* tolerate corrupt file */ }
+            } catch (Exception ignored) { /* ignore corrupt file content */ }
             return out;
         }
 
+        // Write all tasks to disk
         void save(java.util.List<Task> tasks) {
             try {
                 ensureParent();
@@ -64,48 +64,55 @@ public class ToDoSwing extends JFrame {
             }
         }
 
+        // Create parent folder if missing
         private void ensureParent() throws IOException {
             Path dir = file.getParent();
             if (dir != null && !Files.exists(dir)) Files.createDirectories(dir);
         }
 
+        // Replace tabs and newlines so each task stays on one line
         private static String safe(String s) {
             if (s == null) return "";
             return s.replace('\t', ' ').replace('\n', ' ');
         }
     }
 
-    /* ===== Service (in-memory list + operations) ===== */
+    // In memory operations on tasks
     static class TaskService {
-        private final java.util.List<Task> tasks;
-        private int nextId;
+        private final java.util.List<Task> tasks; // live list used by the table model
+        private int nextId;                       // next id to assign
         TaskService(java.util.List<Task> initial) {
             this.tasks = new ArrayList<>(initial);
             this.nextId = computeNextId(tasks);
             sort();
         }
+        // Read only view for callers
         java.util.List<Task> all() { return Collections.unmodifiableList(tasks); }
+        // Add new task at top of list
         Task add(String title, String desc) {
             Task t = new Task(nextId++, title.trim(), desc == null ? "" : desc.trim(), false);
             tasks.add(t); sort(); return t;
         }
+        // Set completed flag by id
         boolean toggle(int id, boolean value) {
             for (Task t : tasks) if (t.id == id) { t.completed = value; sort(); return true; }
             return false;
         }
+        // Remove by id
         boolean delete(int id) { boolean ok = tasks.removeIf(t -> t.id == id); if (ok) sort(); return ok; }
+        // Order incomplete first, then newest first
         private void sort() {
-            // show incomplete first, then newest by id
             tasks.sort(Comparator
                     .comparing((Task t) -> t.completed)
                     .thenComparing((Task t) -> t.id, Comparator.reverseOrder()));
         }
+        // Find next id based on current max
         private static int computeNextId(java.util.List<Task> ts) {
             int max = 0; for (Task t : ts) max = Math.max(max, t.id); return max + 1;
         }
     }
 
-    /* ===== Table Model ===== */
+    // Table model that connects the list of tasks to JTable
     static class TasksTableModel extends AbstractTableModel {
         private final String[] cols = {"Done", "Title", "Description"};
         private final TaskService service;
@@ -114,7 +121,7 @@ public class ToDoSwing extends JFrame {
         @Override public int getColumnCount() { return cols.length; }
         @Override public String getColumnName(int c) { return cols[c]; }
         @Override public Class<?> getColumnClass(int c) { return c == 0 ? Boolean.class : String.class; }
-        @Override public boolean isCellEditable(int r, int c) { return c == 0; } // only checkbox
+        @Override public boolean isCellEditable(int r, int c) { return c == 0; } // only checkbox column is editable
         private Task rowTask(int r) { return service.all().get(r); }
         @Override public Object getValueAt(int r, int c) {
             Task t = rowTask(r);
@@ -122,17 +129,17 @@ public class ToDoSwing extends JFrame {
                 case 0 -> t.completed; case 1 -> t.title; case 2 -> t.description; default -> null; };
         }
         @Override public void setValueAt(Object aValue, int r, int c) {
-            if (c == 0) {
+            if (c == 0) {                    // checkbox changed
                 Task t = rowTask(r);
                 boolean val = (Boolean) aValue;
                 if (service.toggle(t.id, val)) {
-                    fireTableDataChanged();
+                    fireTableDataChanged();   // update rows and order
                 }
             }
         }
     }
 
-    /* ===== Strike-through Renderer for Title/Description ===== */
+    // Renderer that adds strike through and gray color for completed rows
     static class StrikeRenderer extends DefaultTableCellRenderer {
         @Override
         public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
@@ -152,18 +159,20 @@ public class ToDoSwing extends JFrame {
         }
     }
 
-    /* ===== UI ===== */
+    // UI fields
     private final TaskStore store;
     private final TaskService service;
     private final TasksTableModel model;
 
     public ToDoSwing() {
         super("To-Do");
+        // Build storage and service
         Path file = Paths.get(System.getProperty("user.home"), ".todo_simple", "tasks.txt");
         this.store = new TaskStore(file);
         this.service = new TaskService(store.load());
         this.model = new TasksTableModel(service);
 
+        // Table setup
         JTable table = new JTable(model);
         table.setFillsViewportHeight(true);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
@@ -173,31 +182,38 @@ public class ToDoSwing extends JFrame {
 
         JScrollPane scroll = new JScrollPane(table);
 
+        // Buttons
         JButton btnAdd = new JButton("Add");
         JButton btnDelete = new JButton("Delete");
 
+        // Actions
         btnAdd.addActionListener(e -> onAdd());
         btnDelete.addActionListener(e -> onDelete(table));
 
+        // Bottom bar
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         controls.add(btnAdd);
         controls.add(btnDelete);
 
+        // Layout
         setLayout(new BorderLayout(8, 8));
         add(scroll, BorderLayout.CENTER);
         add(controls, BorderLayout.SOUTH);
 
+        // Save when checkbox changes
         model.addTableModelListener(ev -> {
             if (ev.getType() == TableModelEvent.UPDATE) {
                 store.save(service.all());
             }
         });
 
+        // Window setup
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setSize(640, 400);
         setLocationRelativeTo(null);
     }
 
+    // Show add dialog and create a task
     private void onAdd() {
         JTextField tfTitle = new JTextField(20);
         JTextArea taDesc = new JTextArea(5, 20);
@@ -227,6 +243,7 @@ public class ToDoSwing extends JFrame {
         }
     }
 
+    // Delete the selected task after confirmation
     private void onDelete(JTable table) {
         int row = table.getSelectedRow();
         if (row < 0) { JOptionPane.showMessageDialog(this, "Select a row to delete."); return; }
@@ -241,6 +258,7 @@ public class ToDoSwing extends JFrame {
         }
     }
 
+    // Start the app
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> new ToDoSwing().setVisible(true));
     }
